@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="InOfficeTime.Installer/InOfficeTime.Installer.csproj" />
+  <Project Path="InOfficeTime/InOfficeTime.csproj" />
+</Solution>
