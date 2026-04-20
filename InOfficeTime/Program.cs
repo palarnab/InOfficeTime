@@ -22,7 +22,7 @@ var app = builder.Build();
 app.MapGet("/", (HttpRequest req) =>
 {
     if (WantsJson(req))
-        return Results.Json(new { endpoints = new[] { "/log", "/time", "/day" } });
+        return Results.Json(new { endpoints = new[] { "/log", "/time", "/week", "/day" } });
 
     return Results.Redirect("/time");
 });
@@ -57,6 +57,18 @@ app.MapGet("/time", (string? month, HttpRequest req, WorkTimeLogPaths paths) =>
         return Results.Json(report);
 
     return Results.Content(HtmlRenderer.RenderMonthReport(report), "text/html; charset=utf-8");
+});
+
+app.MapGet("/week", (string? week, HttpRequest req, WorkTimeLogPaths paths) =>
+{
+    if (!TryResolveWeek(week, out var key, out var isoYear, out var isoWeek, out var badRequest))
+        return badRequest!;
+
+    var report = WorkTimeAnalytics.BuildWeekReport(key, isoYear, isoWeek, paths, DateTimeOffset.Now);
+    if (WantsJson(req))
+        return Results.Json(report);
+
+    return Results.Content(HtmlRenderer.RenderWeekReport(report), "text/html; charset=utf-8");
 });
 
 app.MapGet("/day", (string? date, HttpRequest req, WorkTimeLogPaths paths) =>
@@ -131,6 +143,28 @@ static bool TryResolveMonth(string? month, out string key, out IResult? badReque
     }
 
     key = month;
+    return true;
+}
+
+static bool TryResolveWeek(string? week, out string key, out int isoYear, out int isoWeek, out IResult? badRequest)
+{
+    badRequest = null;
+    if (string.IsNullOrWhiteSpace(week))
+    {
+        key = WorkTimeLogPaths.CurrentWeekKey();
+        WorkTimeLogPaths.TryParseWeekKey(key, out isoYear, out isoWeek);
+        return true;
+    }
+
+    week = week.Trim();
+    if (!WorkTimeLogPaths.TryParseWeekKey(week, out isoYear, out isoWeek))
+    {
+        key = string.Empty;
+        badRequest = Results.BadRequest("Invalid week. Expected yyyy-Www (ISO 8601 week, e.g. 2026-W17).");
+        return false;
+    }
+
+    key = week;
     return true;
 }
 

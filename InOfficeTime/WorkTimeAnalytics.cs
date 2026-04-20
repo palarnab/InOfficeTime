@@ -12,9 +12,37 @@ public sealed class TimeReportResponse
     public double MonthTotalHours => ToHours(MonthTotalSeconds);
     public double MonthOfficeHours => ToHours(MonthOfficeSeconds);
     public double MonthRemoteHours => ToHours(MonthRemoteSeconds);
+    public int TotalOfficeDays => CountOfficeDays(Days);
 
     internal static double ToHours(long seconds) =>
         Math.Round(seconds / 3600d, 2, MidpointRounding.AwayFromZero);
+
+    internal static int CountOfficeDays(IEnumerable<DayReport> days)
+    {
+        var count = 0;
+        foreach (var d in days)
+        {
+            if (d.DayOfficeSeconds > 3600)
+                count++;
+        }
+
+        return count;
+    }
+}
+
+public sealed class WeekReportResponse
+{
+    public required string Week { get; init; }
+    public required string StartDate { get; init; }
+    public required string EndDate { get; init; }
+    public required List<DayReport> Days { get; init; }
+    public long WeekTotalSeconds { get; init; }
+    public long WeekOfficeSeconds { get; init; }
+    public long WeekRemoteSeconds { get; init; }
+    public double WeekTotalHours => TimeReportResponse.ToHours(WeekTotalSeconds);
+    public double WeekOfficeHours => TimeReportResponse.ToHours(WeekOfficeSeconds);
+    public double WeekRemoteHours => TimeReportResponse.ToHours(WeekRemoteSeconds);
+    public int TotalOfficeDays => TimeReportResponse.CountOfficeDays(Days);
 }
 
 public sealed class DayReport
@@ -55,39 +83,103 @@ public static class WorkTimeAnalytics
 
     public static TimeReportResponse BuildFromLogFile(string monthKey, string filePath, DateTimeOffset now)
     {
-        var lines = File.ReadAllLines(filePath);
-        var events = new List<(DateTimeOffset Time, string Name, string Location)>(lines.Length);
-        foreach (var line in lines)
-        {
-            if (string.IsNullOrWhiteSpace(line))
-                continue;
-
-            var parts = line.Split('\t', StringSplitOptions.TrimEntries);
-            if (parts.Length < 2)
-                continue;
-
-            if (!DateTimeOffset.TryParse(parts[0], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var t))
-                continue;
-
-            var location = parts.Length >= 4 && !string.IsNullOrEmpty(parts[3])
-                ? NormalizeLocation(parts[3])
-                : Location.Remote;
-
-            events.Add((t, parts[1], location));
-        }
-
-        events.Sort((a, b) => a.Time.CompareTo(b.Time));
+        var events = ReadEvents(new[] { filePath });
 
         var monthStart = MonthStartLocal(monthKey);
         var monthEnd = monthStart.AddMonths(1);
 
         var intervals = BuildIntervals(events, now);
-        var clipped = ClipToMonth(intervals, monthStart, monthEnd);
+        var clipped = ClipToRange(intervals, monthStart, monthEnd);
 
+        var (days, totalSeconds, officeSeconds, remoteSeconds) = AggregateDays(clipped);
+
+        return new TimeReportResponse
+        {
+            Month = monthKey,
+            Days = days,
+            MonthTotalSeconds = totalSeconds,
+            MonthOfficeSeconds = officeSeconds,
+            MonthRemoteSeconds = remoteSeconds
+        };
+    }
+
+    public static WeekReportResponse BuildWeekReport(
+        string weekKey,
+        int isoYear,
+        int isoWeek,
+        WorkTimeLogPaths paths,
+        DateTimeOffset now)
+    {
+        var weekStartLocalDate = ISOWeek.ToDateTime(isoYear, isoWeek, DayOfWeek.Monday);
+        var weekStart = new DateTimeOffset(DateTime.SpecifyKind(weekStartLocalDate, DateTimeKind.Local));
+        var weekEnd = weekStart.AddDays(7);
+
+        var monthKeys = new HashSet<string>(StringComparer.Ordinal);
+        for (var d = weekStart; d < weekEnd; d = d.AddDays(1))
+            monthKeys.Add(d.ToString("yyyy-MM", CultureInfo.InvariantCulture));
+
+        var filePaths = monthKeys
+            .Select(paths.GetFilePathForMonth)
+            .Where(File.Exists)
+            .ToArray();
+
+        var events = ReadEvents(filePaths);
+
+        var intervals = BuildIntervals(events, now);
+        var clipped = ClipToRange(intervals, weekStart, weekEnd);
+
+        var (days, totalSeconds, officeSeconds, remoteSeconds) = AggregateDays(clipped);
+
+        return new WeekReportResponse
+        {
+            Week = weekKey,
+            StartDate = weekStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            EndDate = weekEnd.AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            Days = days,
+            WeekTotalSeconds = totalSeconds,
+            WeekOfficeSeconds = officeSeconds,
+            WeekRemoteSeconds = remoteSeconds
+        };
+    }
+
+    private static List<(DateTimeOffset Time, string Name, string Location)> ReadEvents(IEnumerable<string> filePaths)
+    {
+        var events = new List<(DateTimeOffset Time, string Name, string Location)>();
+        foreach (var filePath in filePaths)
+        {
+            if (!File.Exists(filePath))
+                continue;
+
+            foreach (var line in File.ReadAllLines(filePath))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                var parts = line.Split('\t', StringSplitOptions.TrimEntries);
+                if (parts.Length < 2)
+                    continue;
+
+                if (!DateTimeOffset.TryParse(parts[0], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var t))
+                    continue;
+
+                var location = parts.Length >= 4 && !string.IsNullOrEmpty(parts[3])
+                    ? NormalizeLocation(parts[3])
+                    : Location.Remote;
+
+                events.Add((t, parts[1], location));
+            }
+        }
+
+        events.Sort((a, b) => a.Time.CompareTo(b.Time));
+        return events;
+    }
+
+    private static (List<DayReport> Days, long Total, long Office, long Remote) AggregateDays(List<Interval> clipped)
+    {
         var dayTotals = new Dictionary<string, List<SessionReport>>(StringComparer.Ordinal);
-        long monthTotal = 0;
-        long monthOffice = 0;
-        long monthRemote = 0;
+        long total = 0;
+        long office = 0;
+        long remote = 0;
 
         foreach (var interval in clipped)
         {
@@ -117,9 +209,9 @@ public static class WorkTimeAnalytics
                         Ongoing = segOngoing
                     });
 
-                    monthTotal += seconds;
-                    if (interval.Location == Location.Office) monthOffice += seconds;
-                    else monthRemote += seconds;
+                    total += seconds;
+                    if (interval.Location == Location.Office) office += seconds;
+                    else remote += seconds;
                 }
 
                 cursor = chunkEnd;
@@ -148,14 +240,7 @@ public static class WorkTimeAnalytics
             })
             .ToList();
 
-        return new TimeReportResponse
-        {
-            Month = monthKey,
-            Days = days,
-            MonthTotalSeconds = monthTotal,
-            MonthOfficeSeconds = monthOffice,
-            MonthRemoteSeconds = monthRemote
-        };
+        return (days, total, office, remote);
     }
 
     private static string NormalizeLocation(string raw) =>
@@ -163,16 +248,16 @@ public static class WorkTimeAnalytics
 
     private readonly record struct Interval(DateTimeOffset Start, DateTimeOffset End, bool Ongoing, string Location);
 
-    private static List<Interval> ClipToMonth(
+    private static List<Interval> ClipToRange(
         List<Interval> intervals,
-        DateTimeOffset monthStart,
-        DateTimeOffset monthEnd)
+        DateTimeOffset rangeStart,
+        DateTimeOffset rangeEnd)
     {
         var list = new List<Interval>();
         foreach (var i in intervals)
         {
-            var cs = i.Start < monthStart ? monthStart : i.Start;
-            var ce = i.End > monthEnd ? monthEnd : i.End;
+            var cs = i.Start < rangeStart ? rangeStart : i.Start;
+            var ce = i.End > rangeEnd ? rangeEnd : i.End;
             if (cs >= ce)
                 continue;
 

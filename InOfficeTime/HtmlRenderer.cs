@@ -93,6 +93,43 @@ internal static class HtmlRenderer
             font-weight: 500;
         }
         nav.links a:hover { filter: brightness(1.1); }
+        form.filter {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            flex-wrap: wrap;
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: .75rem 1rem;
+            margin-bottom: 1.5rem;
+        }
+        form.filter label {
+            color: var(--muted);
+            font-size: .85rem;
+            font-weight: 500;
+        }
+        form.filter input[type="week"] {
+            background: var(--bg-soft);
+            color: var(--text);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: .35rem .6rem;
+            font-family: inherit;
+            font-size: .9rem;
+            color-scheme: light dark;
+        }
+        form.filter button {
+            background: var(--accent);
+            color: var(--bg);
+            border: none;
+            border-radius: 999px;
+            padding: .4rem .9rem;
+            font-size: .85rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        form.filter button:hover { filter: brightness(1.1); }
         .summary-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -233,6 +270,11 @@ internal static class HtmlRenderer
             font-size: .8rem;
             text-align: center;
         }
+        footer.page-footer a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        footer.page-footer a:hover { text-decoration: underline; }
         """;
 
     public static string RenderMonthReport(TimeReportResponse report)
@@ -249,12 +291,56 @@ internal static class HtmlRenderer
         AppendStat(sb, "Total", report.MonthTotalHours, "stat-total");
         AppendStat(sb, "Office", report.MonthOfficeHours, "stat-office");
         AppendStat(sb, "Remote", report.MonthRemoteHours, "stat-remote");
+        AppendStatText(sb, "Total office days", report.TotalOfficeDays.ToString(CultureInfo.InvariantCulture), "stat-office-days");
         AppendStatText(sb, "Days logged", report.Days.Count.ToString(CultureInfo.InvariantCulture), "stat-days");
         sb.Append("</section>");
 
         if (report.Days.Count == 0)
         {
             sb.Append("<div class=\"card empty\">No sessions logged this month yet.</div>");
+        }
+        else
+        {
+            sb.Append("<section>");
+            foreach (var day in report.Days)
+                AppendDay(sb, day, openByDefault: false);
+            sb.Append("</section>");
+        }
+
+        EndDocument(sb);
+        return sb.ToString();
+    }
+
+    public static string RenderWeekReport(WeekReportResponse report)
+    {
+        var sb = new StringBuilder(8192);
+        BeginDocument(sb, $"Work time — {report.Week}");
+
+        sb.Append("<header class=\"page-header\"><div><h1>").Append(HtmlEscape(report.Week))
+          .Append("</h1><div class=\"subtitle\">Weekly work-time report · ")
+          .Append(HtmlEscape(FormatDateRange(report.StartDate, report.EndDate)))
+          .Append("</div></div>");
+        AppendNav(sb, activeMonth: null, activeWeek: report.Week);
+        sb.Append("</header>");
+
+        sb.Append("<form class=\"filter\" method=\"get\" action=\"/week\">")
+          .Append("<label for=\"week-picker\">Filter by week:</label>")
+          .Append("<input type=\"week\" id=\"week-picker\" name=\"week\" value=\"")
+          .Append(HtmlEscape(report.Week)).Append("\">")
+          .Append("<button type=\"submit\">Go</button>")
+          .Append("</form>");
+
+        sb.Append("<section class=\"summary-grid\">");
+        AppendStat(sb, "Total", report.WeekTotalHours, "stat-total");
+        AppendStat(sb, "Office", report.WeekOfficeHours, "stat-office");
+        AppendStat(sb, "Remote", report.WeekRemoteHours, "stat-remote");
+        AppendStatText(sb, "Total office days", report.TotalOfficeDays.ToString(CultureInfo.InvariantCulture), "stat-office-days");
+        AppendStatText(sb, "Days logged", report.Days.Count.ToString(CultureInfo.InvariantCulture), "stat-days");
+        sb.Append("</section>");
+
+        if (report.Days.Count == 0)
+        {
+            sb.Append("<div class=\"card empty\">No sessions logged this week yet.</div>");
         }
         else
         {
@@ -384,7 +470,7 @@ internal static class HtmlRenderer
           .Append(HtmlEscape(value)).Append("</div></div>");
     }
 
-    private static void AppendNav(StringBuilder sb, string? activeMonth)
+    private static void AppendNav(StringBuilder sb, string? activeMonth, string? activeWeek = null)
     {
         sb.Append("<nav class=\"links\">");
         if (activeMonth is not null)
@@ -392,7 +478,12 @@ internal static class HtmlRenderer
             sb.Append("<a href=\"/time?month=").Append(HtmlEscape(activeMonth)).Append("\">Month</a>");
             sb.Append("<a href=\"/log?month=").Append(HtmlEscape(activeMonth)).Append("\">Log</a>");
         }
+        if (activeWeek is not null)
+        {
+            sb.Append("<a href=\"/week?week=").Append(HtmlEscape(activeWeek)).Append("\">Week</a>");
+        }
         sb.Append("<a href=\"/time\">This month</a>");
+        sb.Append("<a href=\"/week\">This week</a>");
         sb.Append("<a href=\"/day\">Today</a>");
         sb.Append("</nav>");
     }
@@ -405,10 +496,19 @@ internal static class HtmlRenderer
           .Append("<style>").Append(CssStyles).Append("</style></head><body><main>");
     }
 
+    private static readonly string AppVersion =
+        typeof(HtmlRenderer).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+
+    private const string ContactEmail = "arnab.i@gmail.com";
+
     private static void EndDocument(StringBuilder sb)
     {
-        sb.Append("<footer class=\"page-footer\">InOfficeTime · ")
+        sb.Append("<footer class=\"page-footer\">InOfficeTime v")
+          .Append(HtmlEscape(AppVersion))
+          .Append(" · ")
           .Append(DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture))
+          .Append(" · <a href=\"mailto:").Append(ContactEmail).Append("\">")
+          .Append(ContactEmail).Append("</a>")
           .Append("</footer></main></body></html>");
     }
 
@@ -417,6 +517,22 @@ internal static class HtmlRenderer
 
     private static string FormatTime(DateTimeOffset t) =>
         t.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+
+    private static string FormatDateRange(string startDateKey, string endDateKey)
+    {
+        if (!DateTime.TryParseExact(startDateKey, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var start))
+            return $"{startDateKey} – {endDateKey}";
+
+        if (!DateTime.TryParseExact(endDateKey, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var end))
+            return $"{startDateKey} – {endDateKey}";
+
+        var startFormat = start.Year == end.Year && start.Month == end.Month ? "MMM d" : "MMM d";
+        return start.Year == end.Year
+            ? $"{start.ToString(startFormat, CultureInfo.InvariantCulture)} – {end.ToString("MMM d, yyyy", CultureInfo.InvariantCulture)}"
+            : $"{start.ToString("MMM d, yyyy", CultureInfo.InvariantCulture)} – {end.ToString("MMM d, yyyy", CultureInfo.InvariantCulture)}";
+    }
 
     private static string FormatWeekday(string dateKey)
     {
