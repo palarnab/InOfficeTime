@@ -499,7 +499,7 @@ internal static class HtmlRenderer
     private static readonly string AppVersion =
         typeof(HtmlRenderer).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
-    private const string ContactEmail = "arnab.i@gmail.com";
+    private const string ContactEmail = "https://github.com/palarnab/InOfficeTime/releases";
 
     private static void EndDocument(StringBuilder sb)
     {
@@ -507,7 +507,7 @@ internal static class HtmlRenderer
           .Append(HtmlEscape(AppVersion))
           .Append(" · ")
           .Append(DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture))
-          .Append(" · <a href=\"mailto:").Append(ContactEmail).Append("\">")
+          .Append(" · <a href=\"").Append(ContactEmail).Append("\">")
           .Append(ContactEmail).Append("</a>")
           .Append("</footer></main></body></html>");
     }
