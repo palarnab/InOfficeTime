@@ -24,6 +24,7 @@ internal static class HtmlRenderer
             --office: #4ade80;
             --remote: #fbbf24;
             --ongoing: #38bdf8;
+            --dayoff: #c084fc;
         }
         @media (prefers-color-scheme: light) {
             :root {
@@ -38,6 +39,7 @@ internal static class HtmlRenderer
                 --office: #16a34a;
                 --remote: #b45309;
                 --ongoing: #0284c7;
+                --dayoff: #7c3aed;
             }
         }
         * { box-sizing: border-box; }
@@ -93,6 +95,13 @@ internal static class HtmlRenderer
             font-weight: 500;
         }
         nav.links a:hover { filter: brightness(1.1); }
+        .filters-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .75rem;
+            margin-bottom: 1.5rem;
+        }
+        .filters-row > form.filter { margin-bottom: 0; flex: 1 1 260px; }
         form.filter {
             display: flex;
             align-items: center;
@@ -109,7 +118,9 @@ internal static class HtmlRenderer
             font-size: .85rem;
             font-weight: 500;
         }
-        form.filter input[type="week"] {
+        form.filter input[type="week"],
+        form.filter input[type="date"],
+        form.filter select {
             background: var(--bg-soft);
             color: var(--text);
             border: 1px solid var(--card-border);
@@ -130,6 +141,9 @@ internal static class HtmlRenderer
             cursor: pointer;
         }
         form.filter button:hover { filter: brightness(1.1); }
+        form.filter.filter-off button {
+            background: var(--dayoff);
+        }
         .summary-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -161,6 +175,7 @@ internal static class HtmlRenderer
         }
         .stat-office .stat-value { color: var(--office); }
         .stat-remote .stat-value { color: var(--remote); }
+        .stat-dayoff .stat-value { color: var(--dayoff); }
         details.day {
             background: var(--card);
             border: 1px solid var(--card-border);
@@ -237,6 +252,12 @@ internal static class HtmlRenderer
         }
         .badge-office { color: var(--office); }
         .badge-remote { color: var(--remote); }
+        .badge-dayoff {
+            color: var(--dayoff);
+            background: color-mix(in srgb, var(--dayoff) 15%, transparent);
+            border-color: transparent;
+        }
+        .chip-dayoff { color: var(--dayoff); font-weight: 600; text-transform: capitalize; }
         .badge-ongoing {
             color: var(--ongoing);
             background: color-mix(in srgb, var(--ongoing) 15%, transparent);
@@ -287,11 +308,16 @@ internal static class HtmlRenderer
         AppendNav(sb, activeMonth: report.Month);
         sb.Append("</header>");
 
+        sb.Append("<div class=\"filters-row\">");
+        AppendDayOffForm(sb);
+        sb.Append("</div>");
+
         sb.Append("<section class=\"summary-grid\">");
         AppendStat(sb, "Total", report.MonthTotalHours, "stat-total");
         AppendStat(sb, "Office", report.MonthOfficeHours, "stat-office");
         AppendStat(sb, "Remote", report.MonthRemoteHours, "stat-remote");
         AppendStatText(sb, "Total office days", report.TotalOfficeDays.ToString(CultureInfo.InvariantCulture), "stat-office-days");
+        AppendDaysOffStat(sb, report.DaysOff);
         AppendStatText(sb, "Days logged", report.Days.Count.ToString(CultureInfo.InvariantCulture), "stat-days");
         sb.Append("</section>");
 
@@ -323,18 +349,22 @@ internal static class HtmlRenderer
         AppendNav(sb, activeMonth: null, activeWeek: report.Week);
         sb.Append("</header>");
 
-        sb.Append("<form class=\"filter\" method=\"get\" action=\"/week\">")
+        sb.Append("<div class=\"filters-row\">")
+          .Append("<form class=\"filter\" method=\"get\" action=\"/week\">")
           .Append("<label for=\"week-picker\">Filter by week:</label>")
           .Append("<input type=\"week\" id=\"week-picker\" name=\"week\" value=\"")
           .Append(HtmlEscape(report.Week)).Append("\">")
           .Append("<button type=\"submit\">Go</button>")
           .Append("</form>");
+        AppendDayOffForm(sb);
+        sb.Append("</div>");
 
         sb.Append("<section class=\"summary-grid\">");
         AppendStat(sb, "Total", report.WeekTotalHours, "stat-total");
         AppendStat(sb, "Office", report.WeekOfficeHours, "stat-office");
         AppendStat(sb, "Remote", report.WeekRemoteHours, "stat-remote");
         AppendStatText(sb, "Total office days", report.TotalOfficeDays.ToString(CultureInfo.InvariantCulture), "stat-office-days");
+        AppendDaysOffStat(sb, report.DaysOff);
         AppendStatText(sb, "Days logged", report.Days.Count.ToString(CultureInfo.InvariantCulture), "stat-days");
         sb.Append("</section>");
 
@@ -368,10 +398,15 @@ internal static class HtmlRenderer
         AppendNav(sb, activeMonth: monthKey);
         sb.Append("</header>");
 
+        sb.Append("<div class=\"filters-row\">");
+        AppendDayOffForm(sb, day.Date);
+        sb.Append("</div>");
+
         sb.Append("<section class=\"summary-grid\">");
         AppendStat(sb, "Total", day.DayTotalHours, "stat-total");
         AppendStat(sb, "Office", day.DayOfficeHours, "stat-office");
         AppendStat(sb, "Remote", day.DayRemoteHours, "stat-remote");
+        AppendDaysOffStat(sb, DayOffDays(day.DayOffType));
         AppendStatText(sb, "Sessions", day.Sessions.Count.ToString(CultureInfo.InvariantCulture), "stat-days");
         sb.Append("</section>");
 
@@ -421,7 +456,16 @@ internal static class HtmlRenderer
           .Append(HtmlEscape(day.Date))
           .Append("</span><span class=\"day-weekday\">")
           .Append(HtmlEscape(FormatWeekday(day.Date)))
-          .Append("</span></span><span class=\"day-stats\"><span><strong>")
+          .Append("</span>");
+
+        if (!string.IsNullOrEmpty(day.DayOffType))
+        {
+            sb.Append("<span class=\"badge badge-dayoff\">")
+              .Append(HtmlEscape(day.DayOffType))
+              .Append(" day off</span>");
+        }
+
+        sb.Append("</span><span class=\"day-stats\"><span><strong>")
           .Append(FormatHours(day.DayTotalHours))
           .Append("</strong> total</span><span class=\"chip-office\">")
           .Append(FormatHours(day.DayOfficeHours))
@@ -461,6 +505,45 @@ internal static class HtmlRenderer
         sb.Append("<div class=\"card ").Append(extraClass).Append("\"><div class=\"stat-label\">")
           .Append(HtmlEscape(label)).Append("</div><div class=\"stat-value\">")
           .Append(FormatHours(hours)).Append("<span class=\"unit\">h</span></div></div>");
+    }
+
+    private static void AppendDaysOffStat(StringBuilder sb, double days)
+    {
+        sb.Append("<div class=\"card stat-dayoff\"><div class=\"stat-label\">Days off</div>")
+          .Append("<div class=\"stat-value\">")
+          .Append(FormatDaysOff(days))
+          .Append("<span class=\"unit\">d</span></div></div>");
+    }
+
+    private static void AppendDayOffForm(StringBuilder sb, string? defaultDate = null)
+    {
+        var value = defaultDate ?? DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        sb.Append("<form class=\"filter filter-off\" method=\"post\" action=\"/off\">")
+          .Append("<label for=\"off-date\">Day off:</label>")
+          .Append("<input type=\"date\" id=\"off-date\" name=\"date\" value=\"")
+          .Append(HtmlEscape(value)).Append("\">")
+          .Append("<select id=\"off-type\" name=\"type\" aria-label=\"Type\">")
+          .Append("<option value=\"full\">Full day</option>")
+          .Append("<option value=\"half\">Half day</option>")
+          .Append("</select>")
+          .Append("<button type=\"submit\">Mark off</button>")
+          .Append("</form>");
+    }
+
+    private static double DayOffDays(string? kind) => kind switch
+    {
+        WorkTimeLogWriter.DayOffFull => 1.0,
+        WorkTimeLogWriter.DayOffHalf => 0.5,
+        _ => 0.0
+    };
+
+    private static string FormatDaysOff(double days)
+    {
+        if (days <= 0)
+            return "0";
+        return days == Math.Floor(days)
+            ? days.ToString("0", CultureInfo.InvariantCulture)
+            : days.ToString("0.0", CultureInfo.InvariantCulture);
     }
 
     private static void AppendStatText(StringBuilder sb, string label, string value, string extraClass)

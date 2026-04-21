@@ -1,3 +1,4 @@
+using System.Globalization;
 using InOfficeTime;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -22,7 +23,7 @@ var app = builder.Build();
 app.MapGet("/", (HttpRequest req) =>
 {
     if (WantsJson(req))
-        return Results.Json(new { endpoints = new[] { "/log", "/time", "/week", "/day" } });
+        return Results.Json(new { endpoints = new[] { "/log", "/time", "/week", "/day", "/off" } });
 
     return Results.Redirect("/time");
 });
@@ -90,6 +91,61 @@ app.MapGet("/day", (string? date, HttpRequest req, WorkTimeLogPaths paths) =>
         return Results.Json(day);
 
     return Results.Content(HtmlRenderer.RenderDayReport(day), "text/html; charset=utf-8");
+});
+
+app.MapPost("/off", async (HttpRequest req, WorkTimeLogWriter writer) =>
+{
+    string? kind = null;
+    string? date = null;
+
+    if (req.HasFormContentType)
+    {
+        var form = await req.ReadFormAsync();
+        kind = form["type"].ToString();
+        date = form["date"].ToString();
+    }
+
+    if (string.IsNullOrWhiteSpace(kind))
+        kind = req.Query["type"].ToString();
+    if (string.IsNullOrWhiteSpace(date))
+        date = req.Query["date"].ToString();
+
+    kind = string.IsNullOrWhiteSpace(kind)
+        ? WorkTimeLogWriter.DayOffFull
+        : kind.Trim().ToLowerInvariant();
+
+    if (kind != WorkTimeLogWriter.DayOffFull && kind != WorkTimeLogWriter.DayOffHalf)
+        return Results.BadRequest("Invalid type. Expected 'full' or 'half'.");
+
+    DateTime localDate;
+    if (string.IsNullOrWhiteSpace(date))
+    {
+        localDate = DateTime.Now.Date;
+    }
+    else
+    {
+        var trimmed = date.Trim();
+        if (!WorkTimeLogPaths.IsValidDateKey(trimmed))
+            return Results.BadRequest("Invalid date. Expected yyyy-mm-dd.");
+
+        localDate = DateTime.ParseExact(trimmed, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    writer.AppendDayOff(localDate, kind);
+
+    if (WantsJson(req))
+    {
+        return Results.Json(new
+        {
+            date = localDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            type = kind,
+            status = "logged"
+        });
+    }
+
+    var referer = req.Headers.Referer.ToString();
+    var redirectTo = string.IsNullOrWhiteSpace(referer) ? "/time" : referer;
+    return Results.Redirect(redirectTo);
 });
 
 app.Run();

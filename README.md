@@ -56,7 +56,7 @@ current instant.
 InOffice/
 ├── InOffice.slnx                    Solution file (both projects)
 ├── InOfficeTime/                    The Windows service / HTTP API
-│   ├── Program.cs                   Minimal-API host + routes (/, /log, /time, /day)
+│   ├── Program.cs                   Minimal-API host + routes (/, /log, /time, /week, /day, /off)
 │   ├── SessionMonitorWorker.cs      STA thread + WTS notification plumbing
 │   ├── WtsMessageWindow.cs          Hidden message-only window
 │   ├── WtsNative.cs                 P/Invoke declarations
@@ -162,7 +162,9 @@ negotiation: a browser gets an HTML page; anything that sends
 | `GET /`                          | Redirects to `/time` (or returns `{endpoints: […]}` for JSON clients).       |
 | `GET /log?month=yyyy-mm`         | Raw log text for the given month (defaults to current month).                |
 | `GET /time?month=yyyy-mm`        | Month report — sessions per day + monthly totals (office / remote / total).  |
+| `GET /week?week=yyyy-Www`        | Week report — sessions per day + weekly totals (ISO 8601 week).              |
 | `GET /day?date=yyyy-mm-dd`       | Single day's sessions + daily totals (defaults to today).                    |
+| `POST /off`                      | Mark a day as out of office (`type=full|half`, `date=yyyy-mm-dd`).           |
 
 ### Quick examples
 
@@ -182,6 +184,21 @@ curl -H "Accept: application/json" http://localhost:11000/time
 curl -H "Accept: application/json" http://localhost:11000/day?date=2026-04-17
 ```
 
+Mark today as a full day off (form-encoded POST):
+
+```cmd
+curl -X POST -d "type=full" http://localhost:11000/off
+```
+
+Mark a specific date as a half day off (JSON response):
+
+```cmd
+curl -X POST -H "Accept: application/json" -d "type=half&date=2026-04-21" http://localhost:11000/off
+```
+
+The browser UI also exposes a **Day off** quick-control next to the filters on
+the `/time`, `/week`, and `/day` pages that POSTs to the same endpoint.
+
 ### JSON response shape (`/time`)
 
 ```json
@@ -193,12 +210,14 @@ curl -H "Accept: application/json" http://localhost:11000/day?date=2026-04-17
   "MonthTotalHours": 34.29,
   "MonthOfficeHours": 22.22,
   "MonthRemoteHours": 12.07,
+  "DaysOff": 1.5,
   "Days": [
     {
       "Date": "2026-04-17",
       "DayTotalSeconds": 27000,
       "DayOfficeSeconds": 18000,
       "DayRemoteSeconds": 9000,
+      "DayOffType": null,
       "Sessions": [
         {
           "Start": "2026-04-17T08:30:00+02:00",
@@ -208,6 +227,14 @@ curl -H "Accept: application/json" http://localhost:11000/day?date=2026-04-17
           "Ongoing": false
         }
       ]
+    },
+    {
+      "Date": "2026-04-21",
+      "DayTotalSeconds": 0,
+      "DayOfficeSeconds": 0,
+      "DayRemoteSeconds": 0,
+      "DayOffType": "full",
+      "Sessions": []
     }
   ]
 }
@@ -233,9 +260,12 @@ Example:
 
 - `EventName` is one of `SessionLogon`, `SessionLogoff`, `SessionLock`,
   `SessionUnlock` (resume vs. pause pairs are decided in
-  `WorkTimeAnalytics.cs`).
-- `Location` is `office` or `remote`, computed at the moment the event fires
-  via an ICMP ping to the configured host.
+  `WorkTimeAnalytics.cs`), or `OutOfOffice` for entries written via `POST /off`.
+- `Location` is `office` or `remote` for session events (computed at the moment
+  the event fires via an ICMP ping to the configured host). For `OutOfOffice`
+  rows the same column carries `full` or `half` to indicate the day-off kind.
+  Day-off entries use a timestamp pinned to local noon of the target date and
+  a session id of `0`.
 
 Log files are plain text and safe to archive, diff, or back up.
 
