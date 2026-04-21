@@ -13,6 +13,7 @@ public sealed class TimeReportResponse
     public double MonthOfficeHours => ToHours(MonthOfficeSeconds);
     public double MonthRemoteHours => ToHours(MonthRemoteSeconds);
     public int TotalOfficeDays => CountOfficeDays(Days);
+    public double DaysOff { get; init; }
 
     internal static double ToHours(long seconds) =>
         Math.Round(seconds / 3600d, 2, MidpointRounding.AwayFromZero);
@@ -43,6 +44,7 @@ public sealed class WeekReportResponse
     public double WeekOfficeHours => TimeReportResponse.ToHours(WeekOfficeSeconds);
     public double WeekRemoteHours => TimeReportResponse.ToHours(WeekRemoteSeconds);
     public int TotalOfficeDays => TimeReportResponse.CountOfficeDays(Days);
+    public double DaysOff { get; init; }
 }
 
 public sealed class DayReport
@@ -55,6 +57,8 @@ public sealed class DayReport
     public double DayTotalHours => TimeReportResponse.ToHours(DayTotalSeconds);
     public double DayOfficeHours => TimeReportResponse.ToHours(DayOfficeSeconds);
     public double DayRemoteHours => TimeReportResponse.ToHours(DayRemoteSeconds);
+    /// <summary>"half" or "full" when the user marked this day off; null otherwise.</summary>
+    public string? DayOffType { get; init; }
 }
 
 public sealed class SessionReport
@@ -92,6 +96,8 @@ public static class WorkTimeAnalytics
         var clipped = ClipToRange(intervals, monthStart, monthEnd);
 
         var (days, totalSeconds, officeSeconds, remoteSeconds) = AggregateDays(clipped);
+        var dayOffs = ExtractDayOffs(events, monthStart, monthEnd);
+        var daysOffTotal = ApplyDayOffs(days, dayOffs);
 
         return new TimeReportResponse
         {
@@ -99,7 +105,8 @@ public static class WorkTimeAnalytics
             Days = days,
             MonthTotalSeconds = totalSeconds,
             MonthOfficeSeconds = officeSeconds,
-            MonthRemoteSeconds = remoteSeconds
+            MonthRemoteSeconds = remoteSeconds,
+            DaysOff = daysOffTotal
         };
     }
 
@@ -129,6 +136,8 @@ public static class WorkTimeAnalytics
         var clipped = ClipToRange(intervals, weekStart, weekEnd);
 
         var (days, totalSeconds, officeSeconds, remoteSeconds) = AggregateDays(clipped);
+        var dayOffs = ExtractDayOffs(events, weekStart, weekEnd);
+        var daysOffTotal = ApplyDayOffs(days, dayOffs);
 
         return new WeekReportResponse
         {
@@ -138,13 +147,14 @@ public static class WorkTimeAnalytics
             Days = days,
             WeekTotalSeconds = totalSeconds,
             WeekOfficeSeconds = officeSeconds,
-            WeekRemoteSeconds = remoteSeconds
+            WeekRemoteSeconds = remoteSeconds,
+            DaysOff = daysOffTotal
         };
     }
 
-    private static List<(DateTimeOffset Time, string Name, string Location)> ReadEvents(IEnumerable<string> filePaths)
+    private static List<(DateTimeOffset Time, string Name, string Extra)> ReadEvents(IEnumerable<string> filePaths)
     {
-        var events = new List<(DateTimeOffset Time, string Name, string Location)>();
+        var events = new List<(DateTimeOffset Time, string Name, string Extra)>();
         foreach (var filePath in filePaths)
         {
             if (!File.Exists(filePath))
@@ -162,11 +172,8 @@ public static class WorkTimeAnalytics
                 if (!DateTimeOffset.TryParse(parts[0], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var t))
                     continue;
 
-                var location = parts.Length >= 4 && !string.IsNullOrEmpty(parts[3])
-                    ? NormalizeLocation(parts[3])
-                    : Location.Remote;
-
-                events.Add((t, parts[1], location));
+                var extra = parts.Length >= 4 ? parts[3] : string.Empty;
+                events.Add((t, parts[1], extra));
             }
         }
 
@@ -269,7 +276,7 @@ public static class WorkTimeAnalytics
     }
 
     private static List<Interval> BuildIntervals(
-        List<(DateTimeOffset Time, string Name, string Location)> events,
+        List<(DateTimeOffset Time, string Name, string Extra)> events,
         DateTimeOffset now)
     {
         var result = new List<Interval>();
@@ -277,7 +284,7 @@ public static class WorkTimeAnalytics
         DateTimeOffset? sessionStart = null;
         string? sessionLocation = null;
 
-        foreach (var (time, name, location) in events)
+        foreach (var (time, name, extra) in events)
         {
             if (ResumeEvents.Contains(name))
             {
@@ -285,7 +292,9 @@ public static class WorkTimeAnalytics
                 {
                     active = true;
                     sessionStart = time;
-                    sessionLocation = location;
+                    sessionLocation = string.IsNullOrEmpty(extra)
+                        ? Location.Remote
+                        : NormalizeLocation(extra);
                 }
 
                 continue;
@@ -307,6 +316,88 @@ public static class WorkTimeAnalytics
             result.Add(new Interval(sessionStart.Value, now, true, sessionLocation));
 
         return result;
+    }
+
+    private static Dictionary<string, string> ExtractDayOffs(
+        List<(DateTimeOffset Time, string Name, string Extra)> events,
+        DateTimeOffset rangeStart,
+        DateTimeOffset rangeEnd)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (time, name, extra) in events)
+        {
+            if (!string.Equals(name, WorkTimeLogWriter.DayOffEventName, StringComparison.Ordinal))
+                continue;
+            if (time < rangeStart || time >= rangeEnd)
+                continue;
+
+            var kind = NormalizeDayOffKind(extra);
+            if (kind is null)
+                continue;
+
+            var dateKey = time.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            // Last write wins: a later log entry for the same date overrides earlier ones.
+            result[dateKey] = kind;
+        }
+
+        return result;
+    }
+
+    private static double ApplyDayOffs(List<DayReport> days, Dictionary<string, string> dayOffs)
+    {
+        if (dayOffs.Count == 0)
+            return 0d;
+
+        double total = 0d;
+        foreach (var (_, kind) in dayOffs)
+            total += kind == WorkTimeLogWriter.DayOffFull ? 1.0 : 0.5;
+
+        var byDate = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < days.Count; i++)
+            byDate[days[i].Date] = i;
+
+        foreach (var (date, kind) in dayOffs)
+        {
+            if (byDate.TryGetValue(date, out var idx))
+            {
+                var existing = days[idx];
+                days[idx] = new DayReport
+                {
+                    Date = existing.Date,
+                    Sessions = existing.Sessions,
+                    DayTotalSeconds = existing.DayTotalSeconds,
+                    DayOfficeSeconds = existing.DayOfficeSeconds,
+                    DayRemoteSeconds = existing.DayRemoteSeconds,
+                    DayOffType = kind
+                };
+            }
+            else
+            {
+                days.Add(new DayReport
+                {
+                    Date = date,
+                    Sessions = new List<SessionReport>(),
+                    DayTotalSeconds = 0,
+                    DayOfficeSeconds = 0,
+                    DayRemoteSeconds = 0,
+                    DayOffType = kind
+                });
+            }
+        }
+
+        days.Sort((a, b) => string.CompareOrdinal(a.Date, b.Date));
+        return total;
+    }
+
+    private static string? NormalizeDayOffKind(string raw)
+    {
+        if (string.IsNullOrEmpty(raw))
+            return null;
+        if (raw.Equals(WorkTimeLogWriter.DayOffFull, StringComparison.OrdinalIgnoreCase))
+            return WorkTimeLogWriter.DayOffFull;
+        if (raw.Equals(WorkTimeLogWriter.DayOffHalf, StringComparison.OrdinalIgnoreCase))
+            return WorkTimeLogWriter.DayOffHalf;
+        return null;
     }
 
     private static DateTimeOffset MonthStartLocal(string monthKey)
