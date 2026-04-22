@@ -11,6 +11,10 @@ renders daily and monthly reports as HTML (or JSON).
 
 ---
 
+<img width="985" height="829" alt="image" src="https://github.com/user-attachments/assets/2bfd377d-01bc-4d68-998b-be6e924c3c38" />
+
+---
+
 ## Table of contents
 
 - [How it works](#how-it-works)
